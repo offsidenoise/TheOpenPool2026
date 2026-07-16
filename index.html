@@ -235,7 +235,7 @@ function poolsForPlayer(name){ return POOLS.filter(p=>p.players.includes(name)).
 function poolTagHtml(name){
   const pools=poolsForPlayer(name);
   if(!pools.length) return '<span style="color:#B91C1C;font-size:10px;font-weight:600">Not picked</span>';
-  const label=pools.length<=3?pools.join(" / "):pools.length+" pools";
+  const label=pools.length===1?pools[0]:pools.length+" pools";
   return '<button class="pool-tag-btn" data-player="'+name.replace(/"/g,"&quot;")+'" onclick="openModal(event, this.getAttribute(\'data-player\'))">'+label+'</button>';
 }
 

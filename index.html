@@ -339,7 +339,7 @@ function renderAggregate(){
   const {col,asc}=sortState.agg;
   deduped.sort((a,b)=>{
     if(col==="name")return asc?a.name.localeCompare(b.name):b.name.localeCompare(a.name);
-    if(col==="pool"){const pa=poolsForPlayer(a.name).join(),pb=poolsForPlayer(b.name).join();return asc?pa.localeCompare(pb):pb.localeCompare(pa);}
+    if(col==="pool"){const na=poolsForPlayer(a.name),nb=poolsForPlayer(b.name);const ca=na.length,cb=nb.length;if(ca!==cb)return asc?cb-ca:ca-cb;const pa=na.slice().sort().join(),pb=nb.slice().sort().join();return pa.localeCompare(pb);}
     const av=resolve(a.raw==="-"?999:a.raw),bv=resolve(b.raw==="-"?999:b.raw);return asc?av-bv:bv-av;
   });
   let rc=1;
@@ -368,7 +368,7 @@ function renderDaily(){
   const {col,asc}=sortState.daily;
   allP.sort((a,b)=>{
     if(col==="name")return asc?a.name.localeCompare(b.name):b.name.localeCompare(a.name);
-    if(col==="pool"){const pa=poolsForPlayer(a.name).join(),pb=poolsForPlayer(b.name).join();return asc?pa.localeCompare(pb):pb.localeCompare(pa);}
+    if(col==="pool"){const na=poolsForPlayer(a.name),nb=poolsForPlayer(b.name);const ca=na.length,cb=nb.length;if(ca!==cb)return asc?cb-ca:ca-cb;const pa=na.slice().sort().join(),pb=nb.slice().sort().join();return pa.localeCompare(pb);}
     const pick=(p,c)=>p[c]===null?999:p[c];
     const av=col==="total"?resolve(a.raw==="-"?999:a.raw):pick(a,col);
     const bv=col==="total"?resolve(b.raw==="-"?999:b.raw):pick(b,col);

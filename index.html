@@ -254,7 +254,7 @@ function closeModalOutside(e){ if(e.target===document.getElementById("modal"))cl
 
 async function fetchScores(){
   try{
-    const res=await fetch("https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard");
+    const res=await fetch("https://site.api.espn.com/apis/site/v2/sports/golf/pga/leaderboard?event="+ESPN_EVENT_ID);
     const data=await res.json();
     const event=data.events?.find(e=>e.id===ESPN_EVENT_ID)||data.events?.[0];
     if(!event){setStatus("pre");render();return;}
@@ -262,34 +262,67 @@ async function fetchScores(){
     const competitors=comp?.competitors||[];
     if(!competitors.length){setStatus("pre");render();return;}
     const isComplete=(comp?.status?.type?.name||"").includes("FINAL");
-    // Determine the tournament's current round (max period seen across the field)
+    // Helper: extract a to-par integer from string/number/object shapes
+    const toPar=(x)=>{
+      if(x===null||x===undefined) return null;
+      if(typeof x==="object") x=x.displayValue??x.value??null;
+      if(x===null||x===undefined||x==="") return null;
+      if(typeof x==="string"){ if(x==="E") return 0; const n=parseInt(x,10); return isNaN(n)?null:n; }
+      if(typeof x==="number") return x;
+      return null;
+    };
     let curRound=0;
     const ns={},nr={},nlive={},allG=[];
     competitors.forEach(c=>{
       const name=c.athlete?.fullName; if(!name)return;
       const st=c.status?.type?.name||"";
-      ns[name]=st==="STATUS_CUT"?"CUT":st==="STATUS_WITHDRAWN"?"WD":(parseInt(c.score??"0",10)||0);
+      // Total score: leaderboard gives c.score as string or object; c.statistics may hold "scoreToPar"
+      let totalPar=toPar(c.score);
+      if(totalPar===null){
+        const stat=(c.statistics||[]).find(s=>s.name==="scoreToPar"||s.name==="total");
+        if(stat) totalPar=toPar(stat.displayValue??stat.value);
+      }
+      ns[name]=st==="STATUS_CUT"?"CUT":st==="STATUS_WITHDRAWN"?"WD":(totalPar??0);
       const rounds={r1:null,r2:null,r3:null,r4:null};
       (c.linescores||[]).forEach(ls=>{
-        const p=ls.period,v=ls.displayValue,val=v==="E"?0:parseInt(v,10);
-        if(p===1)rounds.r1=isNaN(val)?null:val;
-        if(p===2)rounds.r2=isNaN(val)?null:val;
-        if(p===3)rounds.r3=isNaN(val)?null:val;
-        if(p===4)rounds.r4=isNaN(val)?null:val;
+        const p=ls.period;
+        const val=toPar(ls.displayValue??ls.value);
+        if(p===1)rounds.r1=val;
+        if(p===2)rounds.r2=val;
+        if(p===3)rounds.r3=val;
+        if(p===4)rounds.r4=val;
       });
       nr[name]=rounds;
       // Live per-golfer: current round period + thru + today score
-      const period=c.status?.period||0;
+      const stObj=c.status||{};
+      let period=stObj.period||0;
+      if(!period){
+        const done=[rounds.r1,rounds.r2,rounds.r3,rounds.r4].filter(v=>v!==null).length;
+        period=Math.min(Math.max(done,1),4);
+      }
       if(period>curRound) curRound=period;
-      // "today" score to par: prefer the linescore for the golfer's current period
+      // "today" score to par
       let todayScore=null;
-      const curLs=(c.linescores||[]).find(ls=>ls.period===period);
-      if(curLs){ const tv=curLs.displayValue; const tvv=tv==="E"?0:parseInt(tv,10); todayScore=isNaN(tvv)?null:tvv; }
+      if(period>=1&&period<=4){
+        const key="r"+period;
+        if(rounds[key]!==null&&rounds[key]!==undefined) todayScore=rounds[key];
+      }
+      const stName=stObj.type?.name||"";
+      const notPlaying=stName==="STATUS_CUT"||stName==="STATUS_WITHDRAWN";
+      if(todayScore===null && period===1 && !notPlaying && typeof ns[name]==="number"){
+        todayScore=ns[name];
+      }
+      // thru: leaderboard endpoint provides status.thru (number of holes played)
+      let thruVal=null;
+      if(typeof stObj.thru==="number") thruVal=stObj.thru;
+      else if(typeof stObj.thru==="string"&&stObj.thru!==""){ const t=parseInt(stObj.thru,10); if(!isNaN(t)) thruVal=t; }
+      const detail=(stObj.type?.shortDetail||stObj.type?.detail||stObj.displayValue||"").trim();
       nlive[name]={
         period,
-        thru:c.status?.thru??null,          // holes completed this round (number)
-        teeTime:c.status?.type?.shortDetail||"", // e.g. tee time when not started
-        state:c.status?.type?.state||"",     // "pre","in","post"
+        thru:thruVal,
+        detail,
+        state:stObj.type?.state||"",
+        completed:stObj.type?.completed===true,
         today:todayScore,
       };
       allG.push(name);
@@ -353,10 +386,12 @@ function renderPools(){
       }
       // Thru
       let thruTxt="-";
+      const detail=lv.detail||"";
       if(isCut){ thruTxt=raw; }
-      else if(lv.state==="post"||lv.thru===18){ thruTxt="F"; }
-      else if(typeof lv.thru==="number" && lv.thru>0){ thruTxt=String(lv.thru); }
-      else if(lv.state==="pre"&&lv.teeTime){ thruTxt=lv.teeTime; }
+      else if(lv.completed||lv.state==="post"||lv.thru===18||/^F\b/i.test(detail)){ thruTxt="F"; }
+      else if(typeof lv.thru==="number"&&lv.thru>0){ thruTxt=String(lv.thru); }
+      else if(/thru/i.test(detail)){ const mm=detail.match(/(\d+)/); thruTxt=mm?mm[1]:detail; }
+      else if(lv.state==="pre"||lv.today===null){ thruTxt=detail||"-"; }
       const thruClr=isPrize?"#A8BAE8":"#6B7BA4";
       return '<div class="player-row" style="border-bottom:1px solid '+(isPrize?"rgba(255,255,255,0.1)":"#E2E8F4")+'">'
         +'<div class="player-bar" style="background:'+barColor+'"></div>'

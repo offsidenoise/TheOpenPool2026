@@ -43,7 +43,9 @@
     .players-expanded{padding:12px 18px 16px 56px}
     .player-row{display:flex;align-items:center;gap:10px;padding:7px 0}
     .player-bar{width:3px;height:16px;border-radius:99px;flex-shrink:0}
-    .player-name-cell{flex:1;font-size:13px;letter-spacing:-0.1px}
+    .player-name-cell{flex:1;font-size:13px;letter-spacing:-0.1px;min-width:0}
+    .col-h{width:44px;flex-shrink:0;text-align:right;font-size:9px;font-weight:700;font-family:inherit}
+    .col-v{width:44px;flex-shrink:0;text-align:right;font-family:'SF Mono','Courier New',monospace;font-weight:700;font-size:12px;letter-spacing:-0.5px}
     .player-note{font-size:10px;margin-top:10px;letter-spacing:0.8px;text-transform:uppercase}
     .score{font-family:'SF Mono','Courier New',monospace;font-weight:700;display:inline-block;text-align:right;letter-spacing:-0.5px}
     .rules{margin-top:24px;padding:16px 18px;background:#fff;border-radius:10px;border:1.5px solid #D6DFEF}
@@ -209,7 +211,7 @@ const POOLS = [
 const ESPN_EVENT_ID = "401811957";
 const PAR = 288;
 const CUT = 20;
-let SCORES = {}, ROUNDS = {}, LEADER = 0, WINNING_SCORE = null, openCard = null, ALL_GOLFERS = [];
+let SCORES = {}, ROUNDS = {}, LEADER = 0, WINNING_SCORE = null, openCard = null, ALL_GOLFERS = [], LIVE = {}, CURRENT_ROUND = 0;
 const sortState = { agg:{col:"total",asc:true}, daily:{col:"total",asc:true} };
 
 const resolve = s => (s==="CUT"||s==="WD") ? CUT : typeof s==="string" ? (parseInt(s,10)||0) : (s??0);
@@ -260,7 +262,9 @@ async function fetchScores(){
     const competitors=comp?.competitors||[];
     if(!competitors.length){setStatus("pre");render();return;}
     const isComplete=(comp?.status?.type?.name||"").includes("FINAL");
-    const ns={},nr={},allG=[];
+    // Determine the tournament's current round (max period seen across the field)
+    let curRound=0;
+    const ns={},nr={},nlive={},allG=[];
     competitors.forEach(c=>{
       const name=c.athlete?.fullName; if(!name)return;
       const st=c.status?.type?.name||"";
@@ -274,12 +278,27 @@ async function fetchScores(){
         if(p===4)rounds.r4=isNaN(val)?null:val;
       });
       nr[name]=rounds;
+      // Live per-golfer: current round period + thru + today score
+      const period=c.status?.period||0;
+      if(period>curRound) curRound=period;
+      // "today" score to par: prefer the linescore for the golfer's current period
+      let todayScore=null;
+      const curLs=(c.linescores||[]).find(ls=>ls.period===period);
+      if(curLs){ const tv=curLs.displayValue; const tvv=tv==="E"?0:parseInt(tv,10); todayScore=isNaN(tvv)?null:tvv; }
+      nlive[name]={
+        period,
+        thru:c.status?.thru??null,          // holes completed this round (number)
+        teeTime:c.status?.type?.shortDetail||"", // e.g. tee time when not started
+        state:c.status?.type?.state||"",     // "pre","in","post"
+        today:todayScore,
+      };
       allG.push(name);
     });
+    CURRENT_ROUND=curRound;
     const nums=competitors.map(c=>parseInt(c.score??"0",10)).filter(n=>!isNaN(n));
     if(nums.length)LEADER=Math.min(...nums);
     if(isComplete)WINNING_SCORE=LEADER;
-    SCORES=ns;ROUNDS=nr;ALL_GOLFERS=allG;
+    SCORES=ns;ROUNDS=nr;LIVE=nlive;ALL_GOLFERS=allG;
     setStatus("live");render();
   }catch(e){setStatus("error");render();}
 }
@@ -311,18 +330,43 @@ function renderPools(){
     const sorted=[...pool.players].sort((a,b)=>resolve(SCORES[a]??0)-resolve(SCORES[b]??0));
     const counting=new Set(sorted.slice(0,3));
     const isOpen=openCard===pool.id;
+    const colHeadClr=isPrize?"rgba(138,157,192,0.8)":"#6B7BA4";
+    const rLabel="R"+(CURRENT_ROUND||1);
+    const headerRow='<div class="player-row" style="border-bottom:1px solid '+(isPrize?"rgba(255,255,255,0.18)":"#D6DFEF")+';padding-bottom:6px">'
+      +'<div class="player-bar" style="background:transparent"></div>'
+      +'<span class="player-name-cell" style="font-size:9px;letter-spacing:1px;text-transform:uppercase;color:'+colHeadClr+'">Golfer</span>'
+      +'<span class="col-h" style="color:'+colHeadClr+'">Total</span>'
+      +'<span class="col-h" style="color:'+colHeadClr+'">'+rLabel+'</span>'
+      +'<span class="col-h" style="color:'+colHeadClr+'">Thru</span>'
+      +'</div>';
     const playerRows=sorted.map(name=>{
       const raw=SCORES[name]??"-",isCut=raw==="CUT"||raw==="WD",counts=counting.has(name);
       const barColor=counts?(isPrize?"#fff":"#0A6E3F"):"transparent";
       const nameClr=isCut?(isPrize?"#4B5EA8":"#94a3b8"):(isPrize?"#A8BAE8":"#374151");
       const sc_clr=scoreColor(raw==="-"?0:raw,isPrize);
+      const lv=LIVE[name]||{};
+      // Today's round score
+      let todayTxt="-",todayClr=isPrize?"#6B7EA8":"#CBD5E1";
+      if(!isCut && lv.today!==null && lv.today!==undefined){
+        todayTxt=fmt(lv.today);
+        todayClr=lv.today<0?(isPrize?"#5DF5A0":"#0A6E3F"):lv.today>0?(isPrize?"#fca5a5":"#B91C1C"):(isPrize?"#A8BAE8":"#6B7BA4");
+      }
+      // Thru
+      let thruTxt="-";
+      if(isCut){ thruTxt=raw; }
+      else if(lv.state==="post"||lv.thru===18){ thruTxt="F"; }
+      else if(typeof lv.thru==="number" && lv.thru>0){ thruTxt=String(lv.thru); }
+      else if(lv.state==="pre"&&lv.teeTime){ thruTxt=lv.teeTime; }
+      const thruClr=isPrize?"#A8BAE8":"#6B7BA4";
       return '<div class="player-row" style="border-bottom:1px solid '+(isPrize?"rgba(255,255,255,0.1)":"#E2E8F4")+'">'
         +'<div class="player-bar" style="background:'+barColor+'"></div>'
         +'<span class="player-name-cell" style="color:'+nameClr+';text-decoration:'+(isCut?"line-through":"none")+'">'+name+'</span>'
-        +'<span class="score" style="font-size:12px;min-width:30px;color:'+sc_clr+'">'+(raw==="-"?"-":fmtRaw(raw))+'</span>'
+        +'<span class="col-v" style="color:'+sc_clr+'">'+(raw==="-"?"-":fmtRaw(raw))+'</span>'
+        +'<span class="col-v" style="color:'+todayClr+'">'+todayTxt+'</span>'
+        +'<span class="col-v" style="font-size:11px;color:'+thruClr+'">'+thruTxt+'</span>'
         +'</div>';
     }).join("");
-    const playersDiv=isOpen?'<div class="players-expanded" style="border-top:1px solid '+(isPrize?"rgba(255,255,255,0.13)":"#EEF2FA")+';background:'+(isPrize?"rgba(12,31,74,0.93)":"#F4F7FC")+'">'+playerRows+'<p class="player-note" style="color:'+(isPrize?"rgba(138,157,192,0.7)":"#6B7BA4")+'">Marked = counts toward pool score</p></div>':"";
+    const playersDiv=isOpen?'<div class="players-expanded" style="border-top:1px solid '+(isPrize?"rgba(255,255,255,0.13)":"#EEF2FA")+';background:'+(isPrize?"rgba(12,31,74,0.93)":"#F4F7FC")+'">'+headerRow+playerRows+'<p class="player-note" style="color:'+(isPrize?"rgba(138,157,192,0.7)":"#6B7BA4")+'">Marked = counts toward pool score</p></div>':"";
     return '<div class="card '+(isPrize?"prize":"normal")+'" style="background:'+bg+';border:'+(isPrize?"2px solid rgba(12,31,74,0.2)":"1.5px solid #D6DFEF")+';box-shadow:'+(isPrize?"0 4px 20px rgba(0,31,91,0.15)":"0 1px 4px rgba(0,31,91,0.06)")+'">'
       +(isPrize?'<div class="prize-ribbon" style="background:'+PRIZE_BG[rank-1]+'">'+PRIZE_LABELS[rank-1]+' Place</div>':"")
       +'<button class="card-btn" onclick="toggleCard('+pool.id+')">'

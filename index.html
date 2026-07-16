@@ -236,7 +236,7 @@ function poolTagHtml(name){
   const pools=poolsForPlayer(name);
   if(!pools.length) return '<span style="color:#94a3b8;font-size:10px">-</span>';
   const label=pools.length<=3?pools.join(" / "):pools.length+" pools";
-  return '<button class="pool-tag-btn" onclick="openModal(event,\''+name.replace(/\/g,"\\").replace(/'/g,"\'")+'\'">'+label+'</button>';
+  return '<button class="pool-tag-btn" data-player="'+name.replace(/"/g,"&quot;")+'" onclick="openModal(event, this.getAttribute(\'data-player\'))">'+label+'</button>';
 }
 
 function openModal(e,playerName){

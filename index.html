@@ -212,8 +212,23 @@ const ESPN_EVENT_ID = "401811957";
 const PAR = 288;
 const CUT = 20;
 let SCORES = {}, ROUNDS = {}, LEADER = 0, WINNING_SCORE = null, openCard = null, ALL_GOLFERS = [], LIVE = {}, CURRENT_ROUND = 0;
+let SCORES_N = {}, ROUNDS_N = {}, LIVE_N = {};
+// Accessors that fall back to normalized matching for pool players
+function scoreOf(name){ if(name in SCORES) return SCORES[name]; const k=normName(name); return (k in SCORES_N)?SCORES_N[k]:undefined; }
+function roundsOf(name){ if(name in ROUNDS) return ROUNDS[name]; const k=normName(name); return ROUNDS_N[k]; }
+function liveOf(name){ if(name in LIVE) return LIVE[name]; const k=normName(name); return LIVE_N[k]; }
 const sortState = { agg:{col:"total",asc:true}, daily:{col:"total",asc:true} };
 
+// Normalize golfer names for matching across data sources:
+// strip accents, remove periods, lowercase, collapse spaces.
+// "J.J. Spaun" -> "jj spaun"; "Joaquin Niemann" matches "Joaquín Niemann"
+function normName(s){
+  return (s||"")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
+    .replace(/\./g,"")
+    .replace(/\s+/g," ")
+    .trim().toLowerCase();
+}
 const resolve = s => (s==="CUT"||s==="WD") ? CUT : typeof s==="string" ? (parseInt(s,10)||0) : (s??0);
 const fmt = n => n===0?"E":n>0?"+"+n:""+n;
 const fmtRaw = s => (s==="CUT"||s==="WD") ? s : fmt(resolve(s));
@@ -226,14 +241,14 @@ const scoreColor = (s,onDark) => {
   return "#6B7BA4";
 };
 
-function poolScore(players){ return [...players].map(p=>resolve(SCORES[p]??0)).sort((a,b)=>a-b).slice(0,3).reduce((s,v)=>s+v,0); }
-function lowestOf(players){ return Math.min(...players.map(p=>resolve(SCORES[p]??0))); }
+function poolScore(players){ return [...players].map(p=>resolve(scoreOf(p)??0)).sort((a,b)=>a-b).slice(0,3).reduce((s,v)=>s+v,0); }
+function lowestOf(players){ return Math.min(...players.map(p=>resolve(scoreOf(p)??0))); }
 function tiebreakDiff(pool){ const ref=WINNING_SCORE!==null?WINNING_SCORE:LEADER; return Math.abs(pool.predicted-ref); }
 function ranked(){
   return [...POOLS].map(p=>({...p,score:poolScore(p.players),lowest:lowestOf(p.players)}))
     .sort((a,b)=>{ if(a.score!==b.score)return a.score-b.score; const ta=tiebreakDiff(a),tb=tiebreakDiff(b); if(ta!==tb)return ta-tb; return a.lowest-b.lowest; });
 }
-function poolsForPlayer(name){ return POOLS.filter(p=>p.players.includes(name)).map(p=>p.name); }
+function poolsForPlayer(name){ const k=normName(name); return POOLS.filter(p=>p.players.some(pl=>normName(pl)===k)).map(p=>p.name); }
 function poolTagHtml(name){
   const pools=poolsForPlayer(name);
   if(!pools.length) return '<span style="color:#B91C1C;font-size:10px;font-weight:600">Not picked</span>';
@@ -335,6 +350,10 @@ async function fetchScores(){
     if(nums.length)LEADER=Math.min(...nums);
     if(isComplete)WINNING_SCORE=LEADER;
     SCORES=ns;ROUNDS=nr;LIVE=nlive;ALL_GOLFERS=allG;
+    // Build normalized-name indexes so pool picks match ESPN names despite
+    // accents/periods (e.g. "JJ Spaun" -> "J.J. Spaun", "Joaquin" -> "Joaquín")
+    SCORES_N={};ROUNDS_N={};LIVE_N={};
+    allG.forEach(n=>{ const k=normName(n); SCORES_N[k]=ns[n]; ROUNDS_N[k]=nr[n]; LIVE_N[k]=nlive[n]; });
     setStatus("live");render();
   }catch(e){setStatus("error");render();}
 }
@@ -363,7 +382,7 @@ function renderPools(){
     const bg=isPrize?"#0C1F4A":"#fff",nameColor=isPrize?"#fff":"#0C1F4A",ownerColor=isPrize?"#8A9DC0":"#6B7BA4";
     const rankColor=isPrize?"rgba(255,255,255,0.33)":"rgba(12,31,74,0.27)";
     const sc=pool.score,sc_color=sc<0?(isPrize?"#5DF5A0":"#0A6E3F"):sc>0?(isPrize?"#fca5a5":"#B91C1C"):"#6B7BA4";
-    const sorted=[...pool.players].sort((a,b)=>resolve(SCORES[a]??0)-resolve(SCORES[b]??0));
+    const sorted=[...pool.players].sort((a,b)=>resolve(scoreOf(a)??0)-resolve(scoreOf(b)??0));
     const counting=new Set(sorted.slice(0,3));
     const isOpen=openCard===pool.id;
     const colHeadClr=isPrize?"rgba(138,157,192,0.8)":"#6B7BA4";
@@ -376,11 +395,11 @@ function renderPools(){
       +'<span class="col-h" style="color:'+colHeadClr+'">Thru</span>'
       +'</div>';
     const playerRows=sorted.map(name=>{
-      const raw=SCORES[name]??"-",isCut=raw==="CUT"||raw==="WD",counts=counting.has(name);
+      const raw=scoreOf(name)??"-",isCut=raw==="CUT"||raw==="WD",counts=counting.has(name);
       const barColor=counts?(isPrize?"#fff":"#0A6E3F"):"transparent";
       const nameClr=isCut?(isPrize?"#4B5EA8":"#94a3b8"):(isPrize?"#A8BAE8":"#374151");
       const sc_clr=scoreColor(raw==="-"?0:raw,isPrize);
-      const lv=LIVE[name]||{};
+      const lv=liveOf(name)||{};
       // Today's round score
       let todayTxt="-",todayClr=isPrize?"#6B7EA8":"#CBD5E1";
       if(!isCut && lv.today!==null && lv.today!==undefined){
@@ -418,9 +437,9 @@ function renderAggregate(){
   const seen=new Set(),deduped=[];
   // Full ESPN field once loaded; before then, fall back to pooled players
   const source = ALL_GOLFERS.length ? ALL_GOLFERS : [];
-  source.forEach(name=>{ if(!seen.has(name)){seen.add(name);deduped.push({name,raw:SCORES[name]??"-"});} });
-  // Include any pooled players not in the ESPN field (safety net for name mismatches)
-  POOLS.forEach(pool=>pool.players.forEach(name=>{ if(!seen.has(name)){seen.add(name);deduped.push({name,raw:SCORES[name]??"-"});} }));
+  source.forEach(name=>{ const k=normName(name); if(!seen.has(k)){seen.add(k);deduped.push({name,raw:scoreOf(name)??"-"});} });
+  // Include any pooled players not already present (normalized), for the pre-data state
+  POOLS.forEach(pool=>pool.players.forEach(name=>{ const k=normName(name); if(!seen.has(k)){seen.add(k);deduped.push({name,raw:scoreOf(name)??"-"});} }));
   const {col,asc}=sortState.agg;
   deduped.sort((a,b)=>{
     if(col==="name")return asc?a.name.localeCompare(b.name):b.name.localeCompare(a.name);
@@ -448,7 +467,8 @@ function renderAggregate(){
 function renderDaily(){
   const seen=new Set(),allP=[];
   POOLS.forEach(pool=>pool.players.forEach(name=>{
-    if(!seen.has(name)){seen.add(name);allP.push({name,raw:SCORES[name]??"-",r1:ROUNDS[name]?.r1??null,r2:ROUNDS[name]?.r2??null,r3:ROUNDS[name]?.r3??null,r4:ROUNDS[name]?.r4??null});}
+    const k=normName(name);
+    if(!seen.has(k)){seen.add(k);const rd=roundsOf(name)||{};allP.push({name,raw:scoreOf(name)??"-",r1:rd.r1??null,r2:rd.r2??null,r3:rd.r3??null,r4:rd.r4??null});}
   }));
   const {col,asc}=sortState.daily;
   allP.sort((a,b)=>{

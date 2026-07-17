@@ -254,10 +254,10 @@ function closeModalOutside(e){ if(e.target===document.getElementById("modal"))cl
 
 async function fetchScores(){
   try{
-    // Try the leaderboard endpoint first (has per-player thru); fall back to scoreboard.
+    // Scoreboard endpoint (confirmed to include per-hole linescores for thru); leaderboard as backup.
     const urls=[
-      "https://site.api.espn.com/apis/site/v2/sports/golf/pga/leaderboard",
-      "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard"
+      "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard",
+      "https://site.api.espn.com/apis/site/v2/sports/golf/pga/leaderboard"
     ];
     let event=null,comp=null,competitors=[],usedUrl="";
     for(const url of urls){
@@ -275,9 +275,9 @@ async function fetchScores(){
     if(!event){setStatus("pre");render();return;}
     if(!competitors.length){setStatus("pre");render();return;}
     const isComplete=(comp?.status?.type?.name||"").includes("FINAL");
-    // Helper: extract a to-par integer from string/number/object shapes
+    // Parse a to-par integer from ESPN's string ("-5","E","+1") or number
     const toPar=(x)=>{
-      if(x===null||x===undefined) return null;
+      if(x===null||x===undefined||x==="") return null;
       if(typeof x==="object") x=x.displayValue??x.value??null;
       if(x===null||x===undefined||x==="") return null;
       if(typeof x==="string"){ if(x==="E") return 0; const n=parseInt(x,10); return isNaN(n)?null:n; }
@@ -289,72 +289,42 @@ async function fetchScores(){
     competitors.forEach(c=>{
       const name=c.athlete?.fullName; if(!name)return;
       const st=c.status?.type?.name||"";
-      // Total score: leaderboard gives c.score as string or object; c.statistics may hold "scoreToPar"
-      let totalPar=toPar(c.score);
-      if(totalPar===null){
-        const stat=(c.statistics||[]).find(s=>s.name==="scoreToPar"||s.name==="total");
-        if(stat) totalPar=toPar(stat.displayValue??stat.value);
-      }
+      const notPlaying=st==="STATUS_CUT"||st==="STATUS_WITHDRAWN";
+      // Total score: c.score is a string like "-5"
+      const totalPar=toPar(c.score);
       ns[name]=st==="STATUS_CUT"?"CUT":st==="STATUS_WITHDRAWN"?"WD":(totalPar??0);
+      // Round scores: outer linescores[] keyed by period (1-4); displayValue is to-par for that round.
+      // Each outer entry also has an inner linescores[] of per-hole strokes (period 1-18).
       const rounds={r1:null,r2:null,r3:null,r4:null};
+      const holesByRound={1:0,2:0,3:0,4:0};
       (c.linescores||[]).forEach(ls=>{
         const p=ls.period;
-        const val=toPar(ls.displayValue??ls.value);
-        if(p===1)rounds.r1=val;
-        if(p===2)rounds.r2=val;
-        if(p===3)rounds.r3=val;
-        if(p===4)rounds.r4=val;
+        if(p>=1&&p<=4){
+          rounds["r"+p]=toPar(ls.displayValue??ls.value);
+          // Count holes actually played this round = length of inner per-hole linescores
+          if(Array.isArray(ls.linescores)) holesByRound[p]=ls.linescores.length;
+        }
       });
       nr[name]=rounds;
-      // Live per-golfer: current round period + thru + today score
-      const stObj=c.status||{};
-      let period=stObj.period||0;
-      if(!period){
-        const done=[rounds.r1,rounds.r2,rounds.r3,rounds.r4].filter(v=>v!==null).length;
-        period=Math.min(Math.max(done,1),4);
-      }
+      // Current round = highest period that has any hole data (or round score)
+      let period=0;
+      for(let p=4;p>=1;p--){ if(holesByRound[p]>0||rounds["r"+p]!==null){ period=p; break; } }
+      if(!period) period=1;
       if(period>curRound) curRound=period;
-      // "today" score to par
+      // Today's round score
       let todayScore=null;
-      if(period>=1&&period<=4){
-        const key="r"+period;
-        if(rounds[key]!==null&&rounds[key]!==undefined) todayScore=rounds[key];
-      }
-      const stName=stObj.type?.name||"";
-      const notPlaying=stName==="STATUS_CUT"||stName==="STATUS_WITHDRAWN";
-      if(todayScore===null && period===1 && !notPlaying && typeof ns[name]==="number"){
-        todayScore=ns[name];
-      }
-      // thru: ESPN exposes this inconsistently. Check every known location,
-      // then fall back to parsing any "Thru N" / "F" text in the status.
-      let thruVal=null, thruText="";
-      const thruCandidates=[
-        stObj.thru, stObj.hole, stObj.holes, stObj.holesPlayed,
-        c.thru, c.hole, c.holesPlayed,
-        stObj.type?.thru
-      ];
-      for(const cand of thruCandidates){
-        if(typeof cand==="number"){ thruVal=cand; break; }
-        if(typeof cand==="string"&&cand!==""){ const t=parseInt(cand,10); if(!isNaN(t)){ thruVal=t; break; } }
-      }
-      // Gather any human-readable status text ESPN provides
-      const detailTexts=[
-        stObj.type?.shortDetail, stObj.type?.detail, stObj.type?.description,
-        stObj.displayValue, stObj.shortDisplayName, c.status?.displayValue
-      ].filter(x=>typeof x==="string"&&x.trim()!=="");
-      thruText=detailTexts.join(" | ");
-      // If no numeric thru yet, try to read it out of the text ("Thru 12", "12", "F", "-")
-      if(thruVal===null && thruText){
-        if(/\bF\b/i.test(thruText)) thruVal=18;
-        else { const mm=thruText.match(/(?:thru\s*)?(\d{1,2})/i); if(mm){ const t=parseInt(mm[1],10); if(t>=1&&t<=18) thruVal=t; } }
-      }
-      const detail=(stObj.type?.shortDetail||stObj.type?.detail||stObj.displayValue||thruText||"").trim();
+      if(rounds["r"+period]!==null&&rounds["r"+period]!==undefined) todayScore=rounds["r"+period];
+      // Thru = holes played in the current round
+      const holesThisRound=holesByRound[period]||0;
+      let thruVal=null;
+      if(holesThisRound>0) thruVal=holesThisRound;
       nlive[name]={
         period,
         thru:thruVal,
-        detail,
-        state:stObj.type?.state||"",
-        completed:stObj.type?.completed===true,
+        holesThisRound,
+        state:c.status?.type?.state||"",
+        completed:holesThisRound===18||c.status?.type?.completed===true,
+        notPlaying,
         today:todayScore,
       };
       allG.push(name);
@@ -365,12 +335,6 @@ async function fetchScores(){
     if(nums.length)LEADER=Math.min(...nums);
     if(isComplete)WINNING_SCORE=LEADER;
     SCORES=ns;ROUNDS=nr;LIVE=nlive;ALL_GOLFERS=allG;
-    // Diagnostic: expose raw status of first competitor for inspection
-    try{
-      const c0=competitors.find(c=>c.athlete?.fullName);
-      window.__ESPN_DEBUG={endpoint:usedUrl,sampleName:c0?.athlete?.fullName,sampleStatus:c0?.status,sampleScore:c0?.score,sampleLinescores:c0?.linescores,parsedLive:nlive[c0?.athlete?.fullName]};
-      console.log("[GolfPool] ESPN debug — inspect window.__ESPN_DEBUG", window.__ESPN_DEBUG);
-    }catch(e){}
     setStatus("live");render();
   }catch(e){setStatus("error");render();}
 }
@@ -423,14 +387,12 @@ function renderPools(){
         todayTxt=fmt(lv.today);
         todayClr=lv.today<0?(isPrize?"#5DF5A0":"#0A6E3F"):lv.today>0?(isPrize?"#fca5a5":"#B91C1C"):(isPrize?"#A8BAE8":"#6B7BA4");
       }
-      // Thru
+      // Thru — from holes played in the current round
       let thruTxt="-";
-      const detail=lv.detail||"";
       if(isCut){ thruTxt=raw; }
-      else if(lv.completed||lv.state==="post"||lv.thru===18||/^F\b/i.test(detail)){ thruTxt="F"; }
+      else if(lv.completed||lv.holesThisRound===18){ thruTxt="F"; }
       else if(typeof lv.thru==="number"&&lv.thru>0){ thruTxt=String(lv.thru); }
-      else if(/thru/i.test(detail)){ const mm=detail.match(/(\d+)/); thruTxt=mm?mm[1]:detail; }
-      else if(lv.state==="pre"||lv.today===null){ thruTxt=detail||"-"; }
+      else { thruTxt="-"; }
       const thruClr=isPrize?"#A8BAE8":"#6B7BA4";
       return '<div class="player-row" style="border-bottom:1px solid '+(isPrize?"rgba(255,255,255,0.1)":"#E2E8F4")+'">'
         +'<div class="player-bar" style="background:'+barColor+'"></div>'

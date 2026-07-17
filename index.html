@@ -254,12 +254,26 @@ function closeModalOutside(e){ if(e.target===document.getElementById("modal"))cl
 
 async function fetchScores(){
   try{
-    const res=await fetch("https://site.api.espn.com/apis/site/v2/sports/golf/pga/leaderboard?event="+ESPN_EVENT_ID);
-    const data=await res.json();
-    const event=data.events?.find(e=>e.id===ESPN_EVENT_ID)||data.events?.[0];
+    // Try the leaderboard endpoint first (has per-player thru); fall back to scoreboard.
+    const urls=[
+      "https://site.api.espn.com/apis/site/v2/sports/golf/pga/leaderboard",
+      "https://site.api.espn.com/apis/site/v2/sports/golf/pga/scoreboard"
+    ];
+    let event=null,comp=null,competitors=[];
+    for(const url of urls){
+      try{
+        const res=await fetch(url);
+        const data=await res.json();
+        const ev=data.events?.find(e=>e.id===ESPN_EVENT_ID)||data.events?.[0];
+        if(!ev) continue;
+        const cp=ev.competitions?.[0];
+        const cs=cp?.competitors||[];
+        if(cs.length){ event=ev; comp=cp; competitors=cs; break; }
+        // keep first event as a "pre" fallback even if empty
+        if(!event){ event=ev; comp=cp; competitors=cs; }
+      }catch(e){ /* try next url */ }
+    }
     if(!event){setStatus("pre");render();return;}
-    const comp=event.competitions?.[0];
-    const competitors=comp?.competitors||[];
     if(!competitors.length){setStatus("pre");render();return;}
     const isComplete=(comp?.status?.type?.name||"").includes("FINAL");
     // Helper: extract a to-par integer from string/number/object shapes
